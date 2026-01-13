@@ -1,0 +1,210 @@
+# .gitignore for Stream Voice Agent
+
+# ========== Large Models and Dependencies ==========
+# FunASR Speech Recognition Models
+Funasr/
+
+# Genie-TTS Speech Synthesis Models
+Genie-TTS/
+
+# Other possible model directories
+models/
+checkpoints/
+pretrained/
+CharacterModels/
+
+# ========== Python Cache and Compiled Files ==========
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ========== Output Directories ==========
+tts_output/
+output/
+logs/
+results/
+experiments/
+saved/
+dump/
+
+# ========== Model and Weight Files ==========
+*.bin
+*.pth
+*.h5
+*.ckpt
+*.safetensors
+*.pt
+*.onnx
+*.pb
+*.tflite
+*.pkl
+*.joblib
+*.npz
+
+# ========== Audio Files ==========
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.m4a
+*.aac
+
+# ========== Temporary Files ==========
+temp/
+tmp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*.swn
+*.DS_Store
+Thumbs.db
+
+# ========== IDE Configuration Files ==========
+.vscode/
+.idea/
+*.swp
+*.swo
+*.code-workspace
+.project
+.pydevproject
+.settings/
+*.sublime-*
+
+# ========== Virtual Environments ==========
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+
+# ========== Operating System Files ==========
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ========== Log Files ==========
+*.log
+*.log.*
+log/
+logs/
+
+# ========== Configuration Files (Sensitive Information) ==========
+config.json
+secrets.json
+*.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+credentials.json
+keys.json
+api_keys.json
+
+# ========== Other ==========
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# PyTest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mkautodoc
+*.mod
+
+# Sphinx
+_build/
+
+# PyBuilder
+target/
+
+# VS Code
+.vscode/settings.json
+.vscode/launch.json
+
+# JetBrains
+*.iml
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Backup files
+*.bak
+*.backup
+*.old
+*~
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Package files
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# Media files
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.ico
+*.mov
+*.avi
+*.mp4
+*.mkv
