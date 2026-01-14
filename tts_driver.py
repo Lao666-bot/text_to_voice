@@ -174,7 +174,7 @@ class GenieTTSModule(BaseModule):
 
     def stream_process(self, input_queue: queue.Queue, output_queue: queue.Queue):
         """流式处理（实时生成音频）"""
-        print("🔄 开始流式TTS处理...")
+        ##print("🔄 开始流式TTS处理...")
         
         # 收集所有文本分片
         full_text = ""
@@ -209,8 +209,8 @@ class GenieTTSModule(BaseModule):
             ))
             return
         
-        print(f"🎵 开始TTS合成，文本长度: {len(full_text)} 字符")
-        print(f"📄 文本内容: {full_text}")
+        ##print(f"🎵 开始TTS合成，文本长度: {len(full_text)} 字符")
+        ##print(f"📄 文本内容: {full_text}")
         
         # 启动异步TTS生成
         async def generate_audio():
@@ -218,7 +218,7 @@ class GenieTTSModule(BaseModule):
                 chunk_count = 0
                 total_bytes = 0
                 
-                print(f"🔄 调用tts_async生成音频...")
+                ##print(f"🔄 调用tts_async生成音频...")
                 async for audio_chunk in tts_async(
                     character_name=LOCAL_CHAR_NAME,
                     text=full_text,
@@ -242,7 +242,7 @@ class GenieTTSModule(BaseModule):
                         # 推送到输出队列
                         output_queue.put(audio_data)
                         
-                        print(f"🎵 生成音频分片 #{chunk_count}, 大小: {len(audio_chunk)} 字节")
+                        ##print(f"🎵 生成音频分片 #{chunk_count}, 大小: {len(audio_chunk)} 字节")
                 
                 # 发送结束标记
                 output_queue.put(AudioData(
@@ -253,7 +253,7 @@ class GenieTTSModule(BaseModule):
                     is_finish=True
                 ))
                 
-                print(f"✅ TTS合成完成，共 {chunk_count} 个分片，总计 {total_bytes} 字节")
+                ##print(f"✅ TTS合成完成，共 {chunk_count} 个分片，总计 {total_bytes} 字节")
                 
             except Exception as e:
                 print(f"❌ TTS生成失败: {e}")

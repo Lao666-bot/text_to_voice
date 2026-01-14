@@ -162,9 +162,9 @@ class FunASRStreamingASR(BaseModule):
             # 方案A：使用标点模型（优先）
             if self.use_punc_model and self.punc_model is not None:
                 # 调用标点模型
-                print(f"🔤 标点模型输入: {self.punc_buffer}")
+                ##print(f"🔤 标点模型输入: {self.punc_buffer}")
                 punc_result = self.punc_model.generate(input=self.punc_buffer)
-                print(f"🔤 标点模型原始输出: {punc_result}")
+                ##print(f"🔤 标点模型原始输出: {punc_result}")
                 
                 # 处理不同的返回格式
                 punctuated_text = self._extract_text_from_punc_result(punc_result)
@@ -186,12 +186,12 @@ class FunASRStreamingASR(BaseModule):
         if is_final:
             final_text = punctuated_text
             self.punc_buffer = ""  # 清空缓存
-            print(f"✅ 最终标点结果: {final_text}")
+            ##print(f"✅ 最终标点结果: {final_text}")
         else:
             # 保留最后1-2个字符，避免断句（如"今天天气"→ 保留"天气"）
             final_text = punctuated_text[:-2] if len(punctuated_text) > 2 else ""
             self.punc_buffer = punctuated_text[-2:] if len(punctuated_text) > 2 else punctuated_text
-            print(f"📝 临时标点结果: {final_text}")
+            ##print(f"📝 临时标点结果: {final_text}")
         
         return final_text.strip()
 
@@ -317,14 +317,18 @@ class FunASRStreamingASR(BaseModule):
         final_text = self._add_punctuation(final_text, is_final=True)
         return self._numpy_to_text_data(final_text, is_finish=True)
 
+    # 在 FunASRStreamingASR 类的 stream_process 方法中修改：
     def stream_process(self, input_queue: queue.Queue, output_queue: queue.Queue):
         """流式处理：音频分片识别+实时标点恢复"""
         # 重置所有缓存
         self.cache = {}
-        self.punc_buffer = ""
+        self.punc_buffer = ""  # 存储未加标点的原始文本
         self.vad_active = False
         self.last_speech_time = time.time()
-        chunk_index = 0
+        
+        # 新增：完整句子缓存（用于标点恢复）
+        self.sentence_buffer = ""
+        self.sentence_complete = False
 
         try:
             while True:
@@ -332,25 +336,25 @@ class FunASRStreamingASR(BaseModule):
                 try:
                     audio_chunk: AudioData = input_queue.get(timeout=1.0)
                 except queue.Empty:
-                    # 检查静音超时
+                    # 检查静音超时 - 简化逻辑
                     if (time.time() - self.last_speech_time > self.silence_threshold and 
-                        self.punc_buffer and len(self.punc_buffer) >= 3):
-                        # 静音超时，处理缓存的文本
-                        final_text = self._add_punctuation(self.punc_buffer, is_final=True)
+                        self.sentence_buffer):
+                        # 静音超时，处理缓存的句子
+                        final_text = self._process_sentence(self.sentence_buffer, is_final=True)
                         if final_text:
                             output_queue.put(self._numpy_to_text_data(final_text, is_finish=True))
-                        self.punc_buffer = ""
+                        self.sentence_buffer = ""
                     continue
                 
-                # 结束标记：空PCM + is_finish=True
+                # 结束标记
                 if audio_chunk.pcm_data == b"" and audio_chunk.is_finish:
                     # 处理最后缓存的文本
-                    if self.punc_buffer:
-                        final_text = self._add_punctuation(self.punc_buffer, is_final=True)
+                    if self.sentence_buffer:
+                        final_text = self._process_sentence(self.sentence_buffer, is_final=True)
                         output_queue.put(self._numpy_to_text_data(final_text, is_finish=True))
                     # 推送结束标记
                     output_queue.put(self._numpy_to_text_data("", is_finish=True))
-                    print("🔤 ASR处理完成")
+                    ##print("🔤 ASR处理完成")
                     break
 
                 # 2. 格式转换
@@ -380,33 +384,78 @@ class FunASRStreamingASR(BaseModule):
                     if chunk_text:
                         print(f"🔤 ASR识别: {chunk_text}")
                         
-                        # 6. 实时标点恢复（仅当文本较长时）
-                        if len(chunk_text) > 1:
-                            punctuated_text = self._add_punctuation(chunk_text, is_final=False)
-                            
-                            # 7. 推送带标点的结果
-                            if punctuated_text:
-                                output_queue.put(self._numpy_to_text_data(
-                                    punctuated_text, 
-                                    is_finish=False
-                                ))
-                    
+                        # 6. 累积到句子缓存
+                        self.sentence_buffer += chunk_text
+                        
+                        # 7. 检查句子是否自然结束（中文常见结束词）
+                        # 如果句子较长且有明显的结束词，可以提前处理
+                        if len(self.sentence_buffer) >= 8:  # 句子较长时
+                            # 检查是否有自然结束词
+                            end_words = ['吗', '呢', '吧', '啊', '呀', '哦', '哈', '啦', '的', '了']
+                            if any(self.sentence_buffer.endswith(word) for word in end_words):
+                                # 提前处理句子
+                                final_text = self._process_sentence(self.sentence_buffer, is_final=False)
+                                if final_text:
+                                    # 只输出已经完成的句子部分
+                                    output_queue.put(self._numpy_to_text_data(final_text, is_finish=False))
+                                    # 清空缓存，但保留最后几个字符以防断句
+                                    self.sentence_buffer = self.sentence_buffer[-3:] if len(self.sentence_buffer) > 3 else ""
+                        
                 elif self.vad_active and not is_speech:
-                    # VAD从激活变静音，检查是否需要输出完整句子
+                    # VAD从激活变静音，处理完整句子
                     silence_duration = current_time - self.last_speech_time
-                    if silence_duration > 0.5 and self.punc_buffer:  # 0.5秒静音
-                        # 处理缓存的文本
-                        final_text = self._add_punctuation(self.punc_buffer, is_final=True)
+                    if silence_duration > 0.5 and self.sentence_buffer:  # 0.5秒静音
+                        # 处理缓存的句子
+                        final_text = self._process_sentence(self.sentence_buffer, is_final=True)
                         if final_text:
                             output_queue.put(self._numpy_to_text_data(final_text, is_finish=True))
-                        self.punc_buffer = ""
+                        self.sentence_buffer = ""
                         self.vad_active = False
-
-                chunk_index += 1
 
         except Exception as e:
             print(f"❌ ASR流式处理异常: {e}")
             import traceback
             traceback.print_exc()
-            # 推送错误标记
             output_queue.put(self._numpy_to_text_data("", is_finish=True))
+
+    def _process_sentence(self, text: str, is_final: bool = False) -> str:
+        """处理句子：添加标点"""
+        if not text.strip():
+            return ""
+        
+        # 移除可能的重复文本（简单去重）
+        # 如果文本以标点结尾，可能是上次残留的
+        import re
+        text = text.strip()
+        
+        # 处理重复文本（如"赢？赢？" -> "赢？"）
+        if len(text) >= 4 and text[-2:] == text[-4:-2]:
+            # 发现重复，移除后半部分
+            half_len = len(text) // 2
+            if text[:half_len] == text[half_len:]:
+                text = text[:half_len]
+        
+        ##print(f"📝 处理句子: '{text}' (is_final: {is_final})")
+        
+        try:
+            if self.use_punc_model and self.punc_model is not None:
+                ##print(f"🔤 调用标点模型: '{text}'")
+                punc_result = self.punc_model.generate(input=text)
+                ##print(f"🔤 标点模型输出: {punc_result}")
+                
+                punctuated_text = self._extract_text_from_punc_result(punc_result)
+                punctuated_text = punctuated_text.strip()
+                
+                # 清理标点：移除连续的标点
+                punctuated_text = re.sub(r'([。！？])\1+', r'\1', punctuated_text)
+                punctuated_text = re.sub(r'([,，])\1+', r'\1', punctuated_text)
+                
+                print(f"✅ 标点结果: '{punctuated_text}'")
+                return punctuated_text
+            else:
+                # 使用规则标点
+                return self._smart_rule_based_punc(text)
+                
+        except Exception as e:
+            print(f"⚠️ 标点处理失败: {e}")
+            return text  # 返回原文本

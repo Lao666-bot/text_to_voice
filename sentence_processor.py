@@ -88,7 +88,7 @@ class SentenceProcessor:
         
         if clean_sentence:
             reason = "超时" if is_timeout else "完整"
-            print(f"📦 输出{reason}句子: {clean_sentence}")
+            ##print(f"📦 输出{reason}句子: {clean_sentence}")
             output_queue.put(TextData(text=clean_sentence, is_finish=True))
     
     def reset(self):

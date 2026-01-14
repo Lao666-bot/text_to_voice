@@ -3,6 +3,14 @@
 语音交互系统主程序（修复版）
 实现：录音 → ASR识别 → 句子整合 → LLM处理 → TTS合成 → 音频播放
 """
+import sys
+import os
+
+# 禁用tqdm
+from tqdm import tqdm
+from functools import partialmethod
+
+tqdm.__init__ = partialmethod(tqdm.__init__, disable=True)
 import queue
 import threading
 import time
@@ -131,13 +139,14 @@ def asr_processing_thread():
     """ASR处理线程"""
     print("🔤 ASR处理线程启动")
     
-    try:
-        # 启动ASR流式处理
-        asr_module.stream_process(asr_input_queue, asr_output_queue)
-    except Exception as e:
-        print(f"❌ ASR处理线程异常: {e}")
-        import traceback
-        traceback.print_exc()
+    while not should_stop.is_set():
+        try:
+            # 启动ASR流式处理
+            asr_module.stream_process(asr_input_queue, asr_output_queue)
+        except Exception as e:
+            if not should_stop.is_set():
+                print(f"❌ ASR处理线程异常: {e}")
+            time.sleep(0.1)
     
     print("🔤 ASR处理线程退出")
 
@@ -146,13 +155,14 @@ def tts_processing_thread():
     """TTS处理线程"""
     print("🗣️  TTS处理线程启动")
     
-    try:
-        # 启动TTS流式处理
-        tts_module.stream_process(tts_input_queue, tts_output_queue)
-    except Exception as e:
-        print(f"❌ TTS处理线程异常: {e}")
-        import traceback
-        traceback.print_exc()
+    while not should_stop.is_set():
+        try:
+            # 启动TTS流式处理
+            tts_module.stream_process(tts_input_queue, tts_output_queue)
+        except Exception as e:
+            if not should_stop.is_set():
+                print(f"❌ TTS处理线程异常: {e}")
+            time.sleep(0.1)
     
     print("🗣️  TTS处理线程退出")
 
@@ -161,13 +171,14 @@ def asr_to_llm_thread():
     """ASR → LLM 桥接线程"""
     print("🧠 ASR-LLM桥接线程启动")
     
-    try:
-        # 调用控制模块的asr_to_llm函数
-        asr_to_llm(asr_output_queue, tts_input_queue)
-    except Exception as e:
-        print(f"❌ ASR-LLM桥接线程异常: {e}")
-        import traceback
-        traceback.print_exc()
+    while not should_stop.is_set():
+        try:
+            # 调用控制模块的asr_to_llm函数
+            asr_to_llm(asr_output_queue, tts_input_queue)
+        except Exception as e:
+            if not should_stop.is_set():
+                print(f"❌ ASR-LLM桥接线程异常: {e}")
+            time.sleep(0.1)
     
     print("🧠 ASR-LLM桥接线程退出")
 
@@ -176,13 +187,14 @@ def tts_to_play_thread():
     """TTS → 播放 桥接线程"""
     print("🎵 TTS-播放桥接线程启动")
     
-    try:
-        # 调用控制模块的tts_to_play函数
-        tts_to_play(tts_output_queue, audio_driver)
-    except Exception as e:
-        print(f"❌ TTS-播放桥接线程异常: {e}")
-        import traceback
-        traceback.print_exc()
+    while not should_stop.is_set():
+        try:
+            # 调用控制模块的tts_to_play函数
+            tts_to_play(tts_output_queue, audio_driver)
+        except Exception as e:
+            if not should_stop.is_set():
+                print(f"❌ TTS-播放桥接线程异常: {e}")
+            time.sleep(0.1)
     
     print("🎵 TTS-播放桥接线程退出")
 
@@ -206,10 +218,6 @@ def signal_handler(signum, frame):
     """处理退出信号"""
     print(f"\n📶 收到信号 {signum}，正在退出...")
     should_stop.set()
-    
-    # 通知控制模块停止运行
-    from control import is_running as control_is_running
-    control_is_running = False
 
 # ===================== 清理函数 =====================
 def cleanup_resources():
@@ -224,7 +232,7 @@ def cleanup_resources():
     # 等待线程结束
     for thread in threads:
         if thread.is_alive():
-            thread.join(timeout=1)
+            thread.join(timeout=2)
     
     # 清理控制模块
     cleanup()
@@ -272,6 +280,7 @@ def monitor_threads():
 def main():
     """主函数"""
     global audio_driver, threads
+    
     # 注册信号处理
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -288,24 +297,29 @@ def main():
         # 创建线程列表
         threads = []
         
-        # 创建线程
+        # 创建线程（关键修改：将需要持续运行的线程设为守护线程）
         thread_functions = [
             (audio_to_asr, "音频-ASR桥接"),
             (asr_processing_thread, "ASR处理"),
             (asr_to_llm_thread, "ASR-LLM桥接"),
             (tts_processing_thread, "TTS处理"),
             (tts_to_play_thread, "TTS-播放桥接"),
-            (key_control_thread, "按键控制")
         ]
         
-        # 启动所有线程
+        # 启动处理线程（设为守护线程，持续运行）
         for func, name in thread_functions:
             thread = threading.Thread(target=func, name=name)
-            thread.daemon = True
+            thread.daemon = True  # 设置为守护线程
             threads.append(thread)
             thread.start()
             print(f"✅ 启动线程: {name}")
-            time.sleep(0.2)  # 稍微错开启动时间
+            time.sleep(0.2)
+        
+        # 启动按键控制线程（非守护，主线程）
+        key_thread = threading.Thread(target=key_control_thread, name="按键控制")
+        key_thread.daemon = False  # 按键控制为主线程
+        threads.append(key_thread)
+        key_thread.start()
         
         # 启动线程监控
         monitor_thread = threading.Thread(target=monitor_threads, name="线程监控")
@@ -316,16 +330,18 @@ def main():
         print(f"✅ 共启动 {len(threads)} 个线程")
         print("=" * 60)
         
-        # 主线程等待（直到收到退出信号）
+        # 主线程等待按键控制线程结束
+        # 按键控制线程会阻塞，直到按ESC退出
         try:
-            while not should_stop.is_set():
-                time.sleep(0.5)
-                
-                # 检查控制模块的运行状态
-                from control import is_running as control_is_running
-                if not control_is_running:
-                    should_stop.set()
-                    break
+            key_thread.join()  # 等待按键控制线程结束
+            
+            # 按键控制线程结束后，设置停止标志
+            should_stop.set()
+            
+            # 等待其他线程结束
+            for thread in threads:
+                if thread != key_thread and thread.is_alive():
+                    thread.join(timeout=1)
                     
         except KeyboardInterrupt:
             print("\n👆 收到键盘中断信号")
@@ -340,25 +356,6 @@ def main():
         traceback.print_exc()
         cleanup_resources()
         raise
-    # 在主循环中添加定期清理
-    try:
-            while not should_stop.is_set():
-                time.sleep(5)
-                
-                #
-                
-                # 检查控制模块的运行状态
-                from control import is_running as control_is_running
-                if not control_is_running:
-                    should_stop.set()
-                    break
-                    
-    except KeyboardInterrupt:
-            print("\n👆 收到键盘中断信号")
-            should_stop.set()
-        
-        # 清理资源
-            cleanup_resources()
 
 # ===================== 简化的测试函数 =====================
 def test_flow():
