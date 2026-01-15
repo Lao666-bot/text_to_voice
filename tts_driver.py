@@ -148,7 +148,7 @@ class GenieTTSModule(BaseModule):
         timestamp = int(time.time())
         save_path = os.path.join(SAVE_DIR, f"{LOCAL_CHAR_NAME}_{timestamp}.wav")
         
-        print(f"🔄 批量处理TTS: {input_data.text[:50]}...")
+        ##print(f"🔄 批量处理TTS: {input_data.text[:50]}...")
         tts(
             character_name=LOCAL_CHAR_NAME,
             text=input_data.text,
@@ -161,7 +161,7 @@ class GenieTTSModule(BaseModule):
         with open(save_path, "rb") as f:
             pcm_data = f.read()
         
-        print(f"✅ 批量TTS完成，音频大小: {len(pcm_data)} 字节")
+        ##print(f"✅ 批量TTS完成，音频大小: {len(pcm_data)} 字节")
         
         # 3. 返回AudioData格式
         return AudioData(
@@ -173,96 +173,151 @@ class GenieTTSModule(BaseModule):
         )
 
     def stream_process(self, input_queue: queue.Queue, output_queue: queue.Queue):
-        """流式处理（实时生成音频）"""
-        ##print("🔄 开始流式TTS处理...")
+        """实时流式处理：每收到一个句子就立即合成（同步版本）"""
+        print("🔄 启动实时TTS流式处理...")
         
-        # 收集所有文本分片
-        full_text = ""
-        text_data = None
+        sentence_count = 0
         
-        # 收集LLM输出的所有文本
-        try:
-            while True:
+        while True:
+            try:
+                # 获取文本分片（增加超时时间）
                 try:
                     text_data = input_queue.get(timeout=1.0)
-                    if text_data.text:
-                        full_text += text_data.text
-                        ##print(f"📝 收到文本分片: {text_data.text}")
-                    if text_data.is_finish:
-                        ##print("📝 收到文本结束标记")
-                        break
                 except queue.Empty:
-                    ##print("⏳ 等待更多文本分片...")
                     continue
-        except Exception as e:
-            print(f"❌ 收集文本时出错: {e}")
-            return
-        
-        if not full_text.strip():
-            print("⚠️  文本为空，跳过TTS生成")
-            output_queue.put(AudioData(
-                pcm_data=b"",
-                sample_rate=self.sample_rate,
-                channels=self.channels,
-                bit_depth=self.bit_depth,
-                is_finish=True
-            ))
-            return
-        
-        ##print(f"🎵 开始TTS合成，文本长度: {len(full_text)} 字符")
-        ##print(f"📄 文本内容: {full_text}")
-        
-        # 启动异步TTS生成
-        async def generate_audio():
-            try:
-                chunk_count = 0
-                total_bytes = 0
                 
-                ##print(f"🔄 调用tts_async生成音频...")
-                async for audio_chunk in tts_async(
-                    character_name=LOCAL_CHAR_NAME,
-                    text=full_text,
-                    play=False,
-                    split_sentence=True,
-                    save_path=None
-                ):
-                    if audio_chunk:
-                        chunk_count += 1
-                        total_bytes += len(audio_chunk)
-                        
-                        # 创建AudioData对象
-                        audio_data = AudioData(
-                            pcm_data=audio_chunk,
-                            sample_rate=self.sample_rate,
-                            channels=self.channels,
-                            bit_depth=self.bit_depth,
-                            is_finish=False
-                        )
-                        
-                        # 推送到输出队列
-                        output_queue.put(audio_data)
-                        
-                        ##print(f"🎵 生成音频分片 #{chunk_count}, 大小: {len(audio_chunk)} 字节")
+                # 如果是结束标记
+                if text_data.is_finish and not text_data.text:
+                    output_queue.put(AudioData(
+                        pcm_data=b"",
+                        sample_rate=self.sample_rate,
+                        channels=self.channels,
+                        bit_depth=self.bit_depth,
+                        is_finish=True
+                    ))
+                    ##print(f"✅ TTS流式处理完成，共合成{sentence_count}个句子")
+                    break
                 
-                # 发送结束标记
-                output_queue.put(AudioData(
-                    pcm_data=b"",
-                    sample_rate=self.sample_rate,
-                    channels=self.channels,
-                    bit_depth=self.bit_depth,
-                    is_finish=True
-                ))
+                # 处理当前文本
+                text = text_data.text.strip()
+                if not text:
+                    continue
                 
-                ##print(f"✅ TTS合成完成，共 {chunk_count} 个分片，总计 {total_bytes} 字节")
+                sentence_count += 1
+                ##print(f"🎵 TTS开始合成句子 #{sentence_count}: {text[:50]}...")
+                
+                # 使用同步方法合成当前句子
+                start_time = time.time()
+                
+                try:
+                    # 为每个句子生成临时音频文件
+                    timestamp = int(time.time())
+                    save_path = os.path.join(SAVE_DIR, f"sentence_{timestamp}_{sentence_count}.wav")
+                    
+                    # 合成单个句子
+                    tts(
+                        character_name=LOCAL_CHAR_NAME,
+                        text=text,
+                        play=False,
+                        split_sentence=False,  # 已经是完整句子，不需要再分割
+                        save_path=save_path
+                    )
+                    
+                    # 读取音频数据
+                    with open(save_path, "rb") as f:
+                        pcm_data = f.read()
+                        
+                    pcm_data = self._process_audio_start(pcm_data)
+                    
+                    elapsed = time.time() - start_time
+                    
+                    # 发送音频数据
+                    output_queue.put(AudioData(
+                        pcm_data=pcm_data,
+                        sample_rate=self.sample_rate,
+                        channels=self.channels,
+                        bit_depth=self.bit_depth,
+                        is_finish=False
+                    ))
+                    
+                    ##print(f"✅ TTS句子 #{sentence_count} 合成完成，大小: {len(pcm_data)} 字节，耗时: {elapsed:.2f}秒")
+                    
+                    # 清理临时文件
+                    try:
+                        os.remove(save_path)
+                    except:
+                        pass
+                    
+                except Exception as e:
+                    print(f"❌ TTS合成句子 #{sentence_count} 失败: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
             except Exception as e:
-                print(f"❌ TTS生成失败: {e}")
+                print(f"❌ TTS流式处理错误: {e}")
                 import traceback
                 traceback.print_exc()
+                break
+    #======================去除开头的气泡音=====================
+    def _process_audio_start(self, pcm_data: bytes) -> bytes:
+        """
+        处理音频开头的汽泡音
+        移除开头的静音/噪声段
+        """
+        import numpy as np
         
-        # 运行异步TTS
-        asyncio.run(generate_audio())
-    
+        # 将字节转换为numpy数组
+        dtype = np.int16 if self.bit_depth == 16 else np.int32
+        samples = np.frombuffer(pcm_data, dtype=dtype)
+        
+        # 计算音频的RMS能量
+        window_size = 100  # 10ms窗口（16000Hz采样率）
+        num_windows = len(samples) // window_size
+        
+        # 寻找第一个非静音窗口
+        start_index = 0
+        silence_threshold = 500  # 调整这个阈值
+        
+        for i in range(min(10, num_windows)):  # 只检查前10个窗口（100ms）
+            window = samples[i * window_size:(i + 1) * window_size]
+            rms = np.sqrt(np.mean(window.astype(np.float64) ** 2))
+            
+            if rms > silence_threshold:
+                # 找到语音开始，稍微提前一点（但不超过前一个窗口）
+                start_index = max(0, (i - 1) * window_size)
+                print(f"  检测到语音开始于第{i}个窗口，RMS={rms:.1f}")
+                break
+        
+        # 如果没找到，尝试更宽松的条件
+        if start_index == 0 and len(samples) > 2000:
+            # 计算整个开头的RMS
+            first_500 = samples[:2000]
+            rms_500 = np.sqrt(np.mean(first_500.astype(np.float64) ** 2))
+            
+            if rms_500 < 100:  # 非常低的能量，可能是汽泡音
+                # 直接跳过前50ms（800个样本，16kHz）
+                start_index = min(800, len(samples) // 2)
+                print(f"  低能量开头，跳过前{start_index}个样本")
+        
+        # 应用淡入效果，减少突变
+        if start_index > 0:
+            # 创建一个淡入窗口（20ms）
+            fade_in_length = min(320, start_index)  # 320 samples = 20ms @ 16kHz
+            
+            # 复制原始音频
+            processed_samples = samples[start_index:].copy()
+            
+            # 添加淡入效果
+            if fade_in_length > 0 and len(processed_samples) > fade_in_length:
+                # 创建淡入曲线（线性）
+                fade_in = np.linspace(0, 1, fade_in_length)
+                processed_samples[:fade_in_length] = (processed_samples[:fade_in_length] * fade_in).astype(dtype)
+            
+            # 转换回字节
+            return processed_samples.tobytes()
+        else:
+            # 没有找到汽泡音，返回原始数据
+            return pcm_data
     def __del__(self):
         """清理资源"""
         try:

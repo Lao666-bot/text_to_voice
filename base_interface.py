@@ -14,6 +14,7 @@ class AudioData:
     # 核心字段3：声道数 → 固定单声道（语音识别/合成都用单声道）
     channels: int = 1  
     is_finish: bool = False  # 新增：标记是否是最后一个音频分片
+    bit_depth: int = 16  # 确保有这个字段
 
 # 3. 定义文本数据的统一格式（LLM/ASR/TTS交互文本时用）
 @dataclass

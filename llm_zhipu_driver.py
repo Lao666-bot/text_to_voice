@@ -60,44 +60,51 @@ class MemorySystem:
         if len(self.long_term_memory) > self.max_long_term:
             self.long_term_memory = self.long_term_memory[-self.max_long_term:]
     
+    # 添加缺少的方法
+    def _extract_keywords(self, text: str):
+        """提取关键词（简单实现）"""
+        # 简单的关键词提取：过滤掉停用词
+        stop_words = ['的', '了', '在', '是', '我', '你', '他', '她', '它', '我们', '你们', '他们',
+                     '这', '那', '这个', '那个', '和', '与', '或', '但', '而', '如果', '因为',
+                     '所以', '然后', '那么', '一下', '一点', '一些', '一个', '一种', '一样']
+        
+        words = text.split()
+        keywords = []
+        for word in words:
+            if word not in stop_words and len(word) > 1:
+                keywords.append(word)
+        
+        return keywords
+    
     def get_memory_context(self, user_input: str) -> str:
-        """获取记忆上下文"""
-        # 首先提取用户输入中的关键词
-        keywords = self._extract_keywords(user_input)
+        """获取记忆上下文（简化版本）"""
+        # 如果没有记忆，返回空字符串
+        if not self.long_term_memory and not self.short_term_memory:
+            return "（暂无记忆）"
         
-        # 使用关键词查询相关记忆
-        memories = []
-        for keyword in keywords:
-            if len(keyword) > 1:  # 过滤掉太短的关键词
-                mems = self.db.get_relevant_memories(user_input, keyword, limit=2)
-                memories.extend(mems)
+        context = "【相关记忆】\n"
         
-        # 格式化记忆
-        if memories:
-            memory_text = ""
-            for i, memory in enumerate(memories[:3], 1):  # 只取前3个
-                # 简化记忆文本，使其更清晰
-                fact = memory['fact']
-                # 如果记忆太长，截断
-                if len(fact) > 100:
-                    fact = fact[:100] + "..."
-                memory_text += f"- {fact}\n"
-            return memory_text
-        
-        # 如果没有相关记忆，返回最近的记忆
-        recent_conversations = self.db.get_recent_conversations(user_input, limit=3)
-        if recent_conversations:
-            memory_text = ""
-            for conv in recent_conversations:
-                role = "用户" if conv['role'] == 'user' else "我"
-                content = conv['content']
+        # 添加最近的短期记忆
+        if self.short_term_memory:
+            context += "最近的对话：\n"
+            recent = self.short_term_memory[-4:]  # 最近2轮对话
+            for msg in recent:
+                role = "用户" if msg["role"] == "user" else "AI"
+                content = msg["content"]
                 if len(content) > 50:
                     content = content[:50] + "..."
-                memory_text += f"- {role}: {content}\n"
-            return memory_text
+                context += f"{role}: {content}\n"
         
-        return "（暂无记忆）"
+        # 添加长期记忆中的关键词匹配
+        keywords = self._extract_keywords(user_input)
+        if keywords and self.long_term_memory:
+            context += "\n相关长期记忆：\n"
+            for memory in self.long_term_memory[-5:]:  # 最近5条长期记忆
+                if any(keyword in memory.get("key_info", "") for keyword in keywords):
+                    context += f"- {memory.get('key_info', '')}\n"
         
+        return context
+    
     def update_user_profile(self, info: dict):
         """更新用户信息"""
         self.user_profile.update(info)
@@ -495,3 +502,70 @@ def create_stream_generator(tokenizer, model, query: str, history: list, memory_
     
     # 最后yield完整回复
     yield "", new_history, full_response
+# 在 llm_zhipu_driver.py 中添加流式生成器
+def stream_chat_with_memory(tokenizer, model, user_input, history=None, memory_system=None, temperature=0.8):
+    """
+    带记忆的流式对话生成器
+    返回：(chunk, is_final, full_response)
+    """
+    # 准备记忆上下文
+    memory_context = ""
+    if memory_system:
+        try:
+            memory_context = memory_system.get_memory_context(user_input)
+            if memory_context and "（暂无记忆）" not in memory_context:
+                print(f"🧠 使用记忆: {memory_context}")
+        except Exception as e:
+            print(f"⚠️ 记忆系统错误: {e}")
+            memory_context = ""
+    
+    # 构建动态提示词
+    dynamic_prompt = CUSTOM_SYSTEM_PROMPT.format(
+        memory_context=memory_context
+    )
+    
+    # 准备对话历史
+    if not history or history[0].get("role") != "system":
+        history = [{"role": "system", "content": dynamic_prompt}]
+    else:
+        history[0]["content"] = dynamic_prompt
+    
+    # 添加用户输入
+    history.append({"role": "user", "content": user_input})
+    
+    print(f"🧠 LLM开始生成...")
+    
+    # 使用模型的stream_chat方法获取流式响应
+    full_response = ""
+    chunk_count = 0
+    
+    for response, new_history, _ in model.stream_chat(
+        tokenizer=tokenizer,
+        query=user_input,
+        history=history,
+        top_p=0.9,
+        temperature=temperature,
+        system=dynamic_prompt,
+        past_key_values=None,
+        return_past_key_values=True
+    ):
+        # 过滤AI身份关键词
+        filter_words = ["AI", "助手", "ChatGLM", "模型", "训练", "开发", "智谱", "人工智能", "语言模型"]
+        filtered_response = response
+        for word in filter_words:
+            filtered_response = filtered_response.replace(word, "")
+        
+        # 提取新增的内容
+        if len(filtered_response) > len(full_response):
+            new_content = filtered_response[len(full_response):]
+            full_response = filtered_response
+            
+            if new_content:
+                chunk_count += 1
+                # print(f"📝 LLM生成第{chunk_count}个分片: {new_content[:30]}...")
+                yield new_content, False, full_response
+    
+    # 最终yield完整回复和结束标记
+    yield "", True, full_response
+    
+    print(f"✅ LLM生成完成，共{chunk_count}个分片")
