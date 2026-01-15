@@ -66,7 +66,7 @@ def stream_llm_to_tts(text_input, audio_driver, tts_module):
                     print(f"🤖 {control.name}: ", end="", flush=True)
                     
                     # 流式生成LLM回复
-                    for chunk, new_history in control.create_stream_generator(
+                    for chunk, new_history, full_response in control.create_stream_generator(
                         tokenizer=control.tokenizer,
                         model=control.llm_model,
                         query=input_data.text,
@@ -120,7 +120,7 @@ def stream_llm_to_tts(text_input, audio_driver, tts_module):
                     continue
                 
                 sentence_count += 1
-                print(f"📦 句子 #{sentence_count}: {sentence_data.text}")
+                ##print(f"📦 句子 #{sentence_count}: {sentence_data.text}")
                 
                 # 将完整句子发送给TTS
                 tts_input_queue.put(TextData(text=sentence_data.text, is_finish=False))
