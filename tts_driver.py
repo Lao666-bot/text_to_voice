@@ -9,9 +9,16 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 import time
 import wave
-
+import logging
 os.environ["GENIE_DATA_DIR"] = r"C:\Users\k\Agent\Genie-TTS\GenieData"
-
+#======================这是一个日志过滤器，用于过滤掉特定的警告======================
+class GenieTTSFilter(logging.Filter):
+    def filter(self, record):
+        # 过滤掉包含 "Audio successfully saved" 的日志
+        if "Audio successfully saved" in record.getMessage():
+            return False
+        return True
+logging.getLogger().addFilter(GenieTTSFilter())
 # ===================== 1. 导入流式接口规范 =====================
 @dataclass
 class AudioData:
@@ -226,7 +233,7 @@ class GenieTTSModule(BaseModule):
                     # 读取音频数据
                     with open(save_path, "rb") as f:
                         pcm_data = f.read()
-                        
+                        ##去除开头的气泡音
                     pcm_data = self._process_audio_start(pcm_data)
                     
                     elapsed = time.time() - start_time
@@ -261,8 +268,8 @@ class GenieTTSModule(BaseModule):
     #======================去除开头的气泡音=====================
     def _process_audio_start(self, pcm_data: bytes) -> bytes:
         """
-        处理音频开头的汽泡音
-        移除开头的静音/噪声段
+        专门处理TTS开头爆破音的函数
+        爆破音特征：低频能量高、突然的能量爆发、持续时间短（<50ms）
         """
         import numpy as np
         
@@ -270,54 +277,203 @@ class GenieTTSModule(BaseModule):
         dtype = np.int16 if self.bit_depth == 16 else np.int32
         samples = np.frombuffer(pcm_data, dtype=dtype)
         
-        # 计算音频的RMS能量
-        window_size = 100  # 10ms窗口（16000Hz采样率）
-        num_windows = len(samples) // window_size
+        if len(samples) < 1600:  # 小于100ms的音频不处理
+            return pcm_data
         
-        # 寻找第一个非静音窗口
-        start_index = 0
-        silence_threshold = 500  # 调整这个阈值
-        
-        for i in range(min(10, num_windows)):  # 只检查前10个窗口（100ms）
-            window = samples[i * window_size:(i + 1) * window_size]
-            rms = np.sqrt(np.mean(window.astype(np.float64) ** 2))
+        # 1. 爆破音专用检测算法
+        def detect_plosive_noise(audio_data):
+            """检测爆破音噪音"""
+            # 分析前100ms（1600个样本）
+            analysis_length = min(1600, len(audio_data))
+            segment = audio_data[:analysis_length].astype(np.float32)
             
-            if rms > silence_threshold:
-                # 找到语音开始，稍微提前一点（但不超过前一个窗口）
-                start_index = max(0, (i - 1) * window_size)
-                print(f"  检测到语音开始于第{i}个窗口，RMS={rms:.1f}")
-                break
-        
-        # 如果没找到，尝试更宽松的条件
-        if start_index == 0 and len(samples) > 2000:
-            # 计算整个开头的RMS
-            first_500 = samples[:2000]
-            rms_500 = np.sqrt(np.mean(first_500.astype(np.float64) ** 2))
+            # 计算短期能量（用于检测突发能量）
+            window_size = 160  # 10ms窗口
+            num_windows = analysis_length // window_size
             
-            if rms_500 < 100:  # 非常低的能量，可能是汽泡音
-                # 直接跳过前50ms（800个样本，16kHz）
-                start_index = min(800, len(samples) // 2)
-                print(f"  低能量开头，跳过前{start_index}个样本")
+            energies = []
+            for i in range(num_windows):
+                window = segment[i * window_size:(i + 1) * window_size]
+                energy = np.sum(window ** 2) / window_size
+                energies.append(energy)
+            
+            # 计算能量变化率（爆破音的特点是能量突然增加）
+            energy_diffs = np.diff(energies)
+            
+            # 检测能量突然爆发的点
+            sudden_increase_threshold = np.max(energies) * 0.3
+            
+            for i in range(1, len(energy_diffs)):
+                if energy_diffs[i] > sudden_increase_threshold:
+                    # 爆破音通常在前3个窗口内
+                    if i * window_size < 480:  # 前30ms内
+                        # 向前找更合适的起始点（可能在爆发的稍前位置）
+                        return max(0, (i - 1) * window_size)
+            
+            return 0
         
-        # 应用淡入效果，减少突变
+        # 2. 低频爆破音检测（爆破音通常在低频）
+        def detect_low_freq_plosive(audio_data):
+            """检测低频爆破音"""
+            try:
+                from scipy import signal
+                
+                analysis_length = min(800, len(audio_data))
+                segment = audio_data[:analysis_length].astype(np.float32)
+                
+                # 设计带通滤波器（50-200Hz，爆破音主要频率范围）
+                lowcut = 50
+                highcut = 200
+                nyquist = self.sample_rate / 2
+                
+                # 巴特沃斯带通滤波器
+                b, a = signal.butter(
+                    4, 
+                    [lowcut/nyquist, highcut/nyquist], 
+                    btype='band'
+                )
+                
+                # 应用滤波器
+                filtered = signal.filtfilt(b, a, segment)
+                
+                # 计算滤波后的能量
+                window_size = 80  # 5ms
+                num_windows = analysis_length // window_size
+                
+                filtered_energies = []
+                for i in range(num_windows):
+                    window = filtered[i * window_size:(i + 1) * window_size]
+                    energy = np.sum(window ** 2) / window_size
+                    filtered_energies.append(energy)
+                
+                # 找到第一个低频能量峰值
+                energy_threshold = np.percentile(filtered_energies, 70)
+                
+                for i, energy in enumerate(filtered_energies):
+                    if energy > energy_threshold:
+                        # 爆破音通常持续1-2个窗口（5-10ms）
+                        return max(0, (i - 1) * window_size)
+                        
+            except ImportError:
+                # scipy不可用时使用简化方法
+                pass
+            
+            return 0
+        
+        # 3. 经验法则：根据TTS引擎特性直接切除
+        def empirical_cut_for_tts():
+            """根据经验直接切除固定长度"""
+            # Genie TTS通常在开头有固定模式的噪音
+            # 尝试切除前30-50ms（480-800个样本）
+            
+            # 先检查前100ms的能量分布
+            first_100ms = min(1600, len(samples))
+            
+            # 分成4个25ms的窗口
+            window_25ms = 400  # 16kHz * 0.025s
+            windows = []
+            
+            for i in range(0, first_100ms, window_25ms):
+                if i + window_25ms <= first_100ms:
+                    window = samples[i:i+window_25ms]
+                    rms = np.sqrt(np.mean(window.astype(np.float64) ** 2))
+                    windows.append(rms)
+            
+            # 如果第一个窗口能量明显高于后面，很可能是噪音
+            if len(windows) >= 2 and windows[0] > windows[1] * 1.5:
+                return 400  # 切除前25ms
+            
+            # 默认切除30ms（480个样本）
+            return 480
+        
+        # 4. 波形形状检测（爆破音的波形特征）
+        def detect_by_waveform_shape(audio_data):
+            """通过波形形状检测爆破音"""
+            analysis_length = min(800, len(audio_data))
+            segment = audio_data[:analysis_length]
+            
+            # 计算波形的一阶和二阶差分（检测突变）
+            diff1 = np.diff(segment)
+            diff2 = np.diff(diff1)
+            
+            # 寻找幅度突变点
+            amplitude_threshold = np.percentile(np.abs(diff1), 90)
+            
+            for i in range(len(diff1) - 10):
+                # 检查是否有一系列的突变
+                if np.abs(diff1[i]) > amplitude_threshold:
+                    # 检查后续几个点是否也有较大变化
+                    subsequent = np.abs(diff1[i:i+10])
+                    if np.mean(subsequent) > amplitude_threshold * 0.5:
+                        return max(0, i - 20)  # 稍微提前一点
+            
+            return 0
+        
+        # 5. 综合多种检测方法
+        def combined_detection():
+            """综合使用多种检测方法"""
+            detection_results = []
+            
+            # 方法1：能量突变检测
+            pos1 = detect_plosive_noise(samples)
+            if pos1 > 0:
+                detection_results.append(pos1)
+            
+            # 方法2：低频检测（需要scipy）
+            pos2 = detect_low_freq_plosive(samples)
+            if pos2 > 0:
+                detection_results.append(pos2)
+            
+            # 方法3：波形形状检测
+            pos3 = detect_by_waveform_shape(samples)
+            if pos3 > 0:
+                detection_results.append(pos3)
+            
+            # 方法4：经验切除
+            pos4 = empirical_cut_for_tts()
+            detection_results.append(pos4)
+            
+            # 如果所有方法都认为有噪音，取中间值
+            if detection_results:
+                # 去掉最大最小值，取中间值
+                sorted_results = sorted(detection_results)
+                if len(sorted_results) >= 3:
+                    # 取中位数
+                    return sorted_results[len(sorted_results) // 2]
+                else:
+                    # 取平均值
+                    return int(np.mean(sorted_results))
+            
+            return 480  # 默认切除30ms
+        
+        # 执行检测
+        start_index = combined_detection()
+        
+        # 确保不会切除太多（不超过20%，且不超过200ms）
+        max_cut = min(len(samples) // 5, 3200)  # 200ms或20%
+        start_index = min(start_index, max_cut)
+        
+        # 应用切除
         if start_index > 0:
-            # 创建一个淡入窗口（20ms）
-            fade_in_length = min(320, start_index)  # 320 samples = 20ms @ 16kHz
+            # 添加更长的淡入效果来平滑过渡（50ms）
+            fade_in_length = min(800, len(samples) - start_index)  # 50ms淡入
             
-            # 复制原始音频
+            # 复制切除后的音频
             processed_samples = samples[start_index:].copy()
             
-            # 添加淡入效果
             if fade_in_length > 0 and len(processed_samples) > fade_in_length:
-                # 创建淡入曲线（线性）
-                fade_in = np.linspace(0, 1, fade_in_length)
+                # 使用更平滑的淡入曲线（余弦曲线）
+                fade_in = np.cos(np.linspace(np.pi/2, 0, fade_in_length))
                 processed_samples[:fade_in_length] = (processed_samples[:fade_in_length] * fade_in).astype(dtype)
+                
+                print(f"  ✂️ 切除 {start_index} 样本 ({start_index/self.sample_rate*1000:.0f}ms)")
             
-            # 转换回字节
-            return processed_samples.tobytes()
-        else:
-            # 没有找到汽泡音，返回原始数据
-            return pcm_data
+            # 确保切除后音频不会太短
+            if len(processed_samples) > 1600:  # 至少100ms
+                return processed_samples.tobytes()
+        
+        # 如果没有切除或切除后太短，返回原始数据
+        return pcm_data
     def __del__(self):
         """清理资源"""
         try:

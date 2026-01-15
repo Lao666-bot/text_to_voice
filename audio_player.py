@@ -80,9 +80,9 @@ class AudioDriver:
                     self.last_play_rate = current_rate
                     self.last_play_channels = current_channels
                     # audio_player.py 修改 _play_worker 函数中的日志部分
-                    print(f"🔄 适配TTS音频格式：采样率={current_rate}Hz, 声道={current_channels}, "
-                        f"位深={self._get_bit_depth(current_format)}bit, "
-                        f"数据大小={len(audio_data.pcm_data) if audio_data.pcm_data else 0}字节")
+                    ##print(f"🔄 适配TTS音频格式：采样率={current_rate}Hz, 声道={current_channels}, "
+                        ##f"位深={self._get_bit_depth(current_format)}bit, "
+                        ##f"数据大小={len(audio_data.pcm_data) if audio_data.pcm_data else 0}字节")
                     
                 # 直接播放TTS生成的原始PCM数据（无任何转换）
                 if self.play_stream is not None and audio_data.pcm_data:
